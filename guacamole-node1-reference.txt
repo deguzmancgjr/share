@@ -1,0 +1,832 @@
+=====================================================================
+GUACAMOLE HTTPS ACCESS - DETAILED BUILD + TROUBLESHOOTING RUNBOOK
+Reference implementation: node2 / VM 108 / 10.2.229.50
+Target: node1 (replace the placeholders in the table below)
+=====================================================================
+
+OUTCOME ON node2
+----------------
+PC 10.2.228.134 successfully reached:
+  https://10.2.229.50/guacamole/
+
+Root cause of the original failure:
+  VM 108 had TWO default routes:
+    default via 10.100.0.1 dev ens18          (metric 0, lab)
+    default via 10.2.229.1 dev ens19 metric 100 (mgmt)
+  Linux preferred the lab default. Replies to 10.2.228.134 therefore
+  left via 10.100.0.1 with source 10.100.0.50, so the PC never got a
+  valid reply. The server saw the request, but the return path was wrong
+  (asymmetric routing).
+
+Fix:
+  Add a specific route for the client subnet via the MANAGEMENT gateway:
+    10.2.228.0/24 via 10.2.229.1 dev ens19
+  A longer-prefix route beats the default route, so replies now leave
+  with source 10.2.229.50. Persist it in netplan.
+
+Verified after the fix:
+  - tcpdump: bidirectional TLS packets 10.2.228.134 <-> 10.2.229.50:443
+  - Caddy log: remote_ip 10.2.228.134
+  - Guacamole session API: HTTP 204
+  - Browser: Edge loaded Guacamole successfully
+
+
+=====================================================================
+0. VALUE / PLACEHOLDER TABLE
+=====================================================================
+
+Fill this in for node1 BEFORE running anything.
+
+  Item                     node2 example              node1 value
+  ---------------------------------------------------------------------
+  Proxmox node             node2                      node1
+  Guacamole VM ID          108                        <VMID>
+  Guacamole VM name        Node2Guacamole             <VM_NAME>
+  Management bridge        vmbr0                      <MGMT_BRIDGE>
+  Management interface     ens19                      <MGMT_IF>
+  Management MAC           bc:24:11:63:39:26          <MGMT_MAC>
+  Management IP/prefix     10.2.229.50/24             <MGMT_IP>/24
+  Management gateway       10.2.229.1                 <MGMT_GW>
+  Lab bridge               vmbr1                      <LAB_BRIDGE>
+  Lab interface            ens18                      <LAB_IF>
+  Lab MAC                  bc:24:11:a5:3e:82          <LAB_MAC>
+  Lab IP/prefix            10.100.0.50/24             <LAB_IP>/24
+  Lab gateway              10.100.0.1                 <LAB_GW>
+  Client / allowed subnet  10.2.228.0/24              <CLIENT_SUBNET>
+  Your PC                  10.2.228.134               <CLIENT_IP>
+  DNS servers              10.2.196.11, 10.2.196.12   <DNS1>, <DNS2>
+  DNS search domain        ad.phl-imcite.net          <SEARCH_DOMAIN>
+  Guacamole directory      /home/analyst/guacamole    <GUAC_DIR>
+  Public/entry hostname    guac.ad.phl-imcite.net     <GUAC_HOSTNAME>
+  Certificate CN          10.2.229.50                <MGMT_IP>
+  Self-signed cert file    certs/guac.crt             <CERT_FILE>
+  Self-signed key file     certs/guac.key             <KEY_FILE>
+
+IMPORTANT:
+  - Do NOT reuse 10.2.229.50 on node1. Pick a free management IP in the
+    same subnet (10.2.229.x), outside the DHCP pool.
+  - Do NOT copy node2's MAC addresses. Use node1's actual VM NIC MACs.
+  - If node1's Guacamole VM is already running, keep its existing IP/MAC.
+  - The CLIENT_SUBNET must be the subnet your PC is on. If clients are on
+    more than one subnet, add a route for each (or use a summary route).
+
+
+=====================================================================
+1. DISCOVER THE NODE1 VM AND ITS NICS
+=====================================================================
+
+Run on node1 as root:
+
+  qm config <VMID> | grep -E '^net[0-9]+:'
+  qm status <VMID>
+
+Identify which NIC is which by the bridge:
+  bridge=vmbr0  -> management NIC (has the 10.2.229.x address)
+  bridge=vmbr1  -> lab NIC (10.100.x / 10.5.x / 10.7.x)
+
+Inside the VM (console, SSH, or QEMU guest agent):
+
+  ip -br link
+  ip -br a
+  ip route
+  cat /etc/netplan/*.yaml
+
+If the QEMU guest agent is installed and running, you can run commands
+from node1 without logging into the guest:
+
+  qm guest exec <VMID> --timeout 20 -- bash -c 'ip -br a; ip r; cat /etc/netplan/*.yaml'
+
+Map interfaces by MAC:
+  <MGMT_MAC> -> <MGMT_IF>
+  <LAB_MAC>  -> <LAB_IF>
+
+On node2 the mapping was:
+  bc:24:11:63:39:26 -> ens19 -> vmbr0 -> 10.2.229.50/24 (mgmt)
+  bc:24:11:a5:3e:82 -> ens18 -> vmbr1 -> 10.100.0.50/24  (lab)
+
+
+=====================================================================
+2. THE ACTUAL FIX - ADD A RETURN ROUTE FOR THE CLIENT SUBNET
+=====================================================================
+
+2.1 Diagnose first
+------------------
+Inside the Guacamole VM:
+
+  ip route get <CLIENT_IP>
+
+BAD (node2 before the fix):
+  10.2.228.134 via 10.100.0.1 dev ens18 src 10.100.0.50
+
+GOOD (after the fix):
+  10.2.228.134 via 10.2.229.1 dev ens19 src 10.2.229.50
+
+Meaning:
+  - If it goes via the lab default, replies use the lab source IP and
+    the client usually drops them. This looks exactly like "cannot
+    access" even though the request arrived.
+  - The specific route must point at the MANAGEMENT gateway and the
+    management interface.
+
+2.2 Apply immediately (temporary, no reboot required)
+-----------------------------------------------------
+
+  ip route replace <CLIENT_SUBNET> via <MGMT_GW> dev <MGMT_IF>
+
+Example (node2):
+  ip route replace 10.2.228.0/24 via 10.2.229.1 dev ens19
+
+Verify:
+  ip route get <CLIENT_IP>
+  ip route get <DNS1>
+
+2.3 Persist in netplan
+----------------------
+Edit the netplan file that defines the management NIC. On node2 it was
+/etc/netplan/50-cloud-init.yaml (it was originally cloud-init generated,
+but it had already been customized).
+
+Add the client subnet (and the campus DNS subnet, if DNS is reached via
+the management gateway) under the mgmt stanza routes.
+
+Full node2 example:
+
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    lab:
+      match:
+        macaddress: "bc:24:11:a5:3e:82"
+      dhcp4: false
+      addresses:
+        - 10.100.0.50/24
+      routes:
+        - to: default
+          via: 10.100.0.1
+      optional: true
+
+    mgmt:
+      match:
+        macaddress: "bc:24:11:63:39:26"
+      dhcp4: false
+      dhcp6: false
+      accept-ra: false
+      addresses:
+        - 10.2.229.50/24
+      routes:
+        - to: default
+          via: 10.2.229.1
+          metric: 100
+        - to: 10.2.228.0/24
+          via: 10.2.229.1
+        - to: 10.2.196.0/24
+          via: 10.2.229.1
+      nameservers:
+        addresses: [10.2.196.11, 10.2.196.12]
+        search: [ad.phl-imcite.net]
+
+Notes:
+  - Leave the lab default route as-is; it is used for lab and internet
+    traffic. The specific /24 route wins over the default.
+  - Do NOT set a metric on the specific route; prefix length decides.
+  - If your clients are on 10.2.228.0/24, use exactly that. If they are
+    on another subnet, replace it.
+  - If DNS is on the same campus range, add 10.2.196.0/24 too, or a
+    suitable summary route.
+
+2.4 Back up, validate, apply
+----------------------------
+
+  cp -a /etc/netplan/50-cloud-init.yaml \
+        /root/50-cloud-init.yaml.bak-$(date +%F-%H%M%S)
+
+  chmod 600 /etc/netplan/50-cloud-init.yaml
+  netplan generate
+  netplan apply
+
+Verify again:
+  ip route get <CLIENT_IP>
+  ip route get <DNS1>
+  ip route
+
+2.5 Optional: stop cloud-init overwriting the file
+--------------------------------------------------
+If the file is managed by cloud-init, add:
+
+  tee /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg >/dev/null <<'EOF'
+  network: {config: disabled}
+  EOF
+
+This disables cloud-init's network configuration only. The manual
+netplan file remains authoritative.
+
+2.6 If you get locked out
+-------------------------
+The Proxmox console still works. Restore the backup:
+
+  cp -a /root/50-cloud-init.yaml.bak-YYYY-MM-DD-HHMMSS \
+        /etc/netplan/50-cloud-init.yaml
+  netplan apply
+
+Or use the QEMU guest agent from the node:
+
+  qm guest exec <VMID> -- bash -c 'cp -a /root/50-cloud-init.yaml.bak-* /etc/netplan/50-cloud-init.yaml && netplan apply'
+
+
+=====================================================================
+3. BACK UP THE GUACAMOLE STACK BEFORE CHANGES
+=====================================================================
+
+Inside the Guacamole VM:
+
+  cd <GUAC_DIR>
+
+  cp -a docker-compose.yml \
+        docker-compose.yml.bak-$(date +%F-%H%M%S)
+
+  docker exec guacamole_mysql sh -c \
+    'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" guacamole_db' \
+    > guacamole_db-$(date +%F-%H%M%S).sql
+
+  ls -lh docker-compose.yml.bak-* guacamole_db-*.sql
+
+On node2 the backups were:
+  /home/analyst/guacamole/docker-compose.yml.bak-2026-10-21-103426
+  /home/analyst/guacamole/guacamole_db-2026-10-21-103426.sql
+
+Do not share the DB dump: Guacamole stores connection credentials in it.
+
+
+=====================================================================
+4. GUACAMOLE DOCKER STACK
+=====================================================================
+
+The working node2 stack is three services:
+  - guacd      (remote desktop proxy)
+  - mysql      (Guacamole database)
+  - guacamole  (Tomcat web app)
+
+Key points:
+  - All three must be on the SAME Docker network, otherwise the web app
+    cannot resolve guacd. On node2 guacd had been left on the default
+    network while the web app was on guacamole-net; this was corrected.
+  - The web app must NOT publish 8080 to the world. Bind it to
+    127.0.0.1 only; Caddy is the only exposed service.
+  - Caddy uses host networking so it sees the REAL client IP. If Caddy
+    runs bridged, remote_ip can become the Docker gateway and the IP
+    allowlist breaks.
+
+`<GUAC_DIR>/docker-compose.yml` (node2 working version):
+
+services:
+  guacd:
+    image: guacamole/guacd:latest
+    container_name: guacd
+    restart: unless-stopped
+    networks:
+      - guacamole-net
+
+  mysql:
+    image: mysql:8.0
+    container_name: guacamole_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: <DB_ROOT_PASSWORD>
+      MYSQL_DATABASE: guacamole_db
+      MYSQL_USER: guacuser
+      MYSQL_PASSWORD: <DB_GUAC_PASSWORD>
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+      - ./init:/docker-entrypoint-initdb.d
+    networks:
+      - guacamole-net
+
+  guacamole:
+    image: guacamole/guacamole:latest
+    container_name: guacamole
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      GUACD_HOSTNAME: guacd
+      MYSQL_HOSTNAME: mysql
+      MYSQL_DATABASE: guacamole_db
+      MYSQL_USER: guacuser
+      MYSQL_PASSWORD: <DB_GUAC_PASSWORD>
+      MYSQL_ENABLED: "true"
+    depends_on:
+      - guacd
+      - mysql
+    networks:
+      - guacamole-net
+
+  caddy:
+    image: caddy:2
+    container_name: guacamole_caddy
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/etc/caddy/certs:ro
+    depends_on:
+      - guacamole
+
+networks:
+  guacamole-net:
+    driver: bridge
+
+Notes:
+  - Replace <DB_ROOT_PASSWORD> and <DB_GUAC_PASSWORD> with strong unique
+    values on a fresh node1 deployment. If node1 already has a populated
+    DB volume, changing these values requires rotating the DB credentials
+    safely; otherwise keep the existing values.
+  - The `./init` directory must contain the Guacamole JDBC schema
+    (initdb.sql) for a fresh database. If node1 is already initialized,
+    keep its existing init/data directories.
+  - The official Guacamole image loads the MySQL auth and brute-force
+    ban extensions when MYSQL_ENABLED=true. TOTP is not enabled by
+    default (see hardening section).
+
+Apply:
+
+  cd <GUAC_DIR>
+  docker compose config --quiet
+  docker compose up -d
+  docker compose ps
+
+Expected:
+  guacamole       Up   127.0.0.1:8080->8080/tcp
+  guacamole_caddy Up
+  guacamole_mysql Up
+  guacd           Up
+
+Verify guacd is on the same network as the web app:
+
+  docker exec guacamole getent hosts guacd
+  # must return a 172.x address
+
+  docker logs guacd --tail 10
+  # must show: Listening on host 0.0.0.0, port 4822
+
+
+=====================================================================
+5. TLS REVERSE PROXY WITH CADDY
+=====================================================================
+
+Why Caddy:
+  - Simple TLS termination.
+  - Built-in IP allowlist (remote_ip).
+  - Host networking gives the real client IP.
+  - Handles WebSockets automatically (Guacamole needs this).
+
+5.1 Create the certificate (self-signed, IP + DNS SANs)
+-------------------------------------------------------
+
+  cd <GUAC_DIR>
+  mkdir -p certs
+
+  openssl req -x509 -nodes -newkey rsa:4096 -sha256 -days 825 \
+    -keyout certs/guac.key \
+    -out certs/guac.crt \
+    -subj "/CN=<MGMT_IP>" \
+    -addext "subjectAltName=IP:<MGMT_IP>,DNS:<GUAC_HOSTNAME>"
+
+  chmod 600 certs/guac.key
+
+  openssl x509 -in certs/guac.crt -noout \
+    -subject -issuer -dates -ext subjectAltName
+
+Node2 result:
+  subject=CN = 10.2.229.50
+  SAN: IP Address:10.2.229.50, DNS:guac.ad.phl-imcite.net
+  valid: 2026-10-21 -> 2029-01-23
+
+5.2 Caddyfile
+-------------
+
+`<GUAC_DIR>/Caddyfile`:
+
+:443 {
+	tls /etc/caddy/certs/guac.crt /etc/caddy/certs/guac.key
+
+	@denied not remote_ip <CLIENT_SUBNET> <MGMT_SUBNET>
+	respond @denied "Forbidden" 403
+
+	@root path /
+	redir @root /guacamole/ 302
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "no-referrer"
+	}
+
+	reverse_proxy 127.0.0.1:8080
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+Replace:
+  <CLIENT_SUBNET>  e.g. 10.2.228.0/24
+  <MGMT_SUBNET>    e.g. 10.2.229.0/24
+
+Why include the management subnet? It lets you test from the Proxmox
+node (e.g. curl from 10.2.229.10) without weakening access to your PC
+subnet. Remove it if you do not want that.
+
+5.3 Start / reload
+------------------
+
+  cd <GUAC_DIR>
+  docker compose up -d caddy
+
+  # If Caddy is already running and only the Caddyfile changed:
+  docker exec guacamole_caddy caddy reload --config /etc/caddy/Caddyfile
+
+  docker logs guacamole_caddy --tail 30
+
+Expected:
+  server running ... :443
+  serving initial configuration
+  (a warning about HTTP/2 on :80 is harmless; :80 is used for redirect)
+
+
+=====================================================================
+6. UFW RULES (IMPORTANT WITH HOST-MODE CADDY)
+=====================================================================
+
+Docker-published ports can bypass UFW because Docker inserts its own
+iptables rules. That is why the original 8080 was reachable even though
+UFW only allowed 22.
+
+We changed the design:
+  - 8080 is bound to 127.0.0.1, so Docker does not publish it.
+  - Caddy runs with network_mode: host, so UFW DOES apply to 443/80.
+
+Inside the VM:
+
+  ufw allow from <CLIENT_SUBNET> to any port 443 proto tcp
+  ufw allow from <MGMT_SUBNET>   to any port 443 proto tcp
+  ufw allow from <CLIENT_SUBNET> to any port 80  proto tcp
+  ufw allow from <MGMT_SUBNET>   to any port 80  proto tcp
+
+  ufw status numbered
+
+Node2 final rules:
+  [1] 22/tcp   ALLOW IN  Anywhere
+  [2] 443/tcp  ALLOW IN  10.2.228.0/24
+  [3] 443/tcp  ALLOW IN  10.2.229.0/24
+  [4] 80/tcp   ALLOW IN  10.2.228.0/24
+  [5] 80/tcp   ALLOW IN  10.2.229.0/24
+  [6] 22/tcp (v6) ALLOW IN Anywhere (v6)
+
+Port 80 is optional: it only provides an HTTP -> HTTPS redirect so users
+who type the bare IP still land on HTTPS.
+
+
+=====================================================================
+7. VALIDATION FROM THE PROXMOX NODE AND FROM THE PC
+=====================================================================
+
+From node1 (management subnet):
+
+  curl -skI https://<MGMT_IP>/guacamole/
+  # expect HTTP/2 200
+
+  curl -skI https://<MGMT_IP>/
+  # expect HTTP/2 302, location: /guacamole/
+
+  openssl s_client -connect <MGMT_IP>:443 -servername <MGMT_IP> </dev/null \
+    2>/dev/null | openssl x509 -noout -subject -dates -ext subjectAltName
+
+  nmap -Pn -p 22,80,443,8080 <MGMT_IP>
+  # expect: 443 open, 8080 filtered/closed, 22 open
+
+From your PC (PowerShell):
+
+  Test-NetConnection <MGMT_IP> -Port 443
+  curl.exe -k -I https://<MGMT_IP>/guacamole/
+  tracert <MGMT_IP>
+
+Expected:
+  TcpTestSucceeded : True
+  HTTP/1.1 200 (or 302 to /guacamole/)
+
+Then open in the browser:
+  https://<MGMT_IP>/guacamole/
+
+Log in with an existing Guacamole account.
+
+
+=====================================================================
+8. TROUBLESHOOTING DECISION TREE
+=====================================================================
+
+8.1 Browser times out, no packets arrive
+----------------------------------------
+Check on the VM:
+
+  tcpdump -ni any host <CLIENT_IP> and port 443
+
+Then retry from the PC.
+
+  - No packets at all:
+      upstream campus ACL/firewall, wrong IP, browser proxy, or the PC
+      is not actually using the source IP you think.
+
+  - SYN arrives, no SYN-ACK:
+      return path / asymmetric routing. Run:
+        ip route get <CLIENT_IP>
+      It must use <MGMT_GW>/<MGMT_IF> and source <MGMT_IP>.
+      If it uses the lab gateway, repeat Section 2.
+
+  - TLS handshake happens but browser errors:
+      certificate trust/SAN problem (Section 9).
+
+  - Packets arrive and responses leave, but the PC still fails:
+      campus firewall may allow outbound but drop return traffic; check
+      with the network team. A successful tcpdump on the VM with a failed
+      PC is usually upstream filtering or a local PC proxy.
+
+8.2 HTTP 403 Forbidden
+----------------------
+The client IP is not in the Caddy allowlist.
+
+  - Confirm the PC's real source IP in the Caddy log:
+      docker logs guacamole_caddy --tail 50 | grep <CLIENT_IP>
+  - Update @denied in the Caddyfile with the correct <CLIENT_SUBNET>.
+  - Reload:
+      docker exec guacamole_caddy caddy reload --config /etc/caddy/Caddyfile
+
+8.3 HTTP 502 Bad Gateway / blank page
+-------------------------------------
+Caddy is up but the web app is not reachable.
+
+  cd <GUAC_DIR>
+  docker compose ps
+  docker logs guacamole --tail 50
+  curl -sI http://127.0.0.1:8080/guacamole/
+
+If 8080 works locally but 443 gives 502, check the Caddy reverse_proxy
+target (127.0.0.1:8080 with host networking).
+
+8.4 Login page loads, but connections fail
+------------------------------------------
+guacd is not reachable or the target guest is down.
+
+  docker exec guacamole getent hosts guacd
+  docker logs guacd --tail 30
+  docker logs guacamole --tail 50
+
+Verify the target VM IP/port from the Guacamole VM:
+
+  nc -vz <TARGET_IP> 3389     # Windows RDP
+  nc -vz <TARGET_IP> 5900     # VNC
+  nc -vz <TARGET_IP> 22       # SSH
+
+Also confirm the Guacamole VM's lab routing to 10.5.0.x, 10.7.0.x,
+10.100.0.x, etc. The node2 VM used 10.100.0.1 as the lab default gateway.
+
+8.5 Old :8080 URL no longer works
+---------------------------------
+Expected. 8080 is now 127.0.0.1-only. Use:
+  https://<MGMT_IP>/guacamole/
+
+8.6 Docker network warning
+--------------------------
+If guacd and guacamole are on different Docker networks, the web app
+cannot resolve `guacd`. Ensure all services have:
+
+  networks:
+    - guacamole-net
+
+Verify:
+  docker inspect guacd --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+  docker inspect guacamole --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+
+
+=====================================================================
+9. CLIENT CERTIFICATE TRUST (WINDOWS PC)
+=====================================================================
+
+The cert is self-signed. Export it from the VM:
+
+  cat <GUAC_DIR>/certs/guac.crt
+
+Save as guac.crt on the PC, then either:
+
+  Double-click -> Install Certificate -> Local Machine ->
+  Place all certificates in "Trusted Root Certification Authorities" ->
+  Finish.
+
+or PowerShell as Administrator:
+
+  Import-Certificate -FilePath "$env:USERPROFILE\Downloads\guac.crt" `
+    -CertStoreLocation Cert:\LocalMachine\Root
+
+Restart the browser.
+
+Optional DNS name:
+  Add an internal A record:
+    <GUAC_HOSTNAME>  A  <MGMT_IP>
+
+  or a temporary hosts entry on the PC:
+    <MGMT_IP>  <GUAC_HOSTNAME>
+
+The generated cert includes both the IP and the DNS name in its SAN.
+
+Fingerprint check (node2 cert):
+  SHA256 85:65:66:AA:63:87:B9:3A:33:80:7D:6A:4B:D2:1C:E9:97:49:
+         C5:51:0E:F8:57:B7:EC:AE:0E:73:BE:3D:BC:43
+
+If you later obtain an internal-CA or Let's Encrypt cert, replace the
+files in <GUAC_DIR>/certs/ and reload Caddy:
+  docker exec guacamole_caddy caddy reload --config /etc/caddy/Caddyfile
+
+
+=====================================================================
+10. ROLLBACK
+=====================================================================
+
+10.1 Roll back the routing change
+---------------------------------
+  cp -a /root/50-cloud-init.yaml.bak-YYYY-MM-DD-HHMMSS \
+        /etc/netplan/50-cloud-init.yaml
+  netplan generate
+  netplan apply
+
+10.2 Roll back the compose/stack
+--------------------------------
+  cd <GUAC_DIR>
+  cp -a docker-compose.yml.bak-YYYY-MM-DD-HHMMSS docker-compose.yml
+  docker compose up -d
+
+10.3 Remove Caddy only
+----------------------
+  cd <GUAC_DIR>
+  docker compose stop caddy
+  docker compose rm -f caddy
+
+If you also want to restore the old 8080 publishing, change the compose
+port back from "127.0.0.1:8080:8080" to "8080:8080" and run
+docker compose up -d. Do not leave 8080 open on an untrusted network.
+
+10.4 Restore the database (only if needed)
+------------------------------------------
+  docker exec -i guacamole_mysql sh -c \
+    'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" guacamole_db' \
+    < guacamole_db-YYYY-MM-DD-HHMMSS.sql
+
+
+=====================================================================
+11. SECURITY HARDENING (RECOMMENDED AFTER ACCESS WORKS)
+=====================================================================
+
+11.1 Enable TOTP (MFA)
+----------------------
+Add to the guacamole service environment in docker-compose.yml:
+
+      TOTP_ENABLED: "true"
+      TOTP_ISSUER: "CTRDC Lab"
+
+Then:
+  docker compose up -d guacamole
+
+Users enroll an authenticator app on their next login. Test with one
+account before rolling it out to everyone. Keep a way to disable it
+(remove the variables and recreate the container) in case of lockout.
+
+11.2 Restrict SSH
+-----------------
+Node2 currently allows 22 from anywhere. Restrict it to management and
+client subnets. Keep the Proxmox console available before doing this:
+
+  ufw delete allow 22/tcp
+  ufw allow from <MGMT_SUBNET> to any port 22 proto tcp
+  ufw allow from <CLIENT_SUBNET> to any port 22 proto tcp
+  ufw status numbered
+
+11.3 Replace weak DB credentials
+--------------------------------
+The node2 compose contains placeholder/weak DB passwords. On a fresh
+node1 deployment, use strong unique values. For an existing DB, rotate
+the MySQL user password first, then update the compose values, then
+recreate the containers.
+
+11.4 Protect the DB dump
+------------------------
+Guacamole stores connection credentials in MySQL. Treat DB dumps as
+secrets; do not put them in shared folders or chat.
+
+11.5 Restrict Proxmox 8006
+--------------------------
+Do not expose the Proxmox UI publicly. Remove the global 8006 accept in
+the cluster firewall and restrict it to management/admin sources.
+
+11.6 Consider fail2ban
+----------------------
+Guacamole's brute-force "ban" extension is already loaded (5 failed
+attempts -> 300 s ban). You can add fail2ban for Caddy/Guacamole logs if
+you want longer or custom bans.
+
+
+=====================================================================
+12. NODE1 QUICK COMMAND CHECKLIST (COPY/PASTE, REPLACE VALUES)
+=====================================================================
+
+# 0. Discover
+qm config <VMID> | grep -E '^net[0-9]+:'
+qm guest exec <VMID> -- bash -c 'ip -br link; ip -br a; ip r; cat /etc/netplan/*.yaml'
+
+# 1. Backups
+cp -a /etc/netplan/50-cloud-init.yaml /root/50-cloud-init.yaml.bak-$(date +%F-%H%M%S)
+cd <GUAC_DIR>
+cp -a docker-compose.yml docker-compose.yml.bak-$(date +%F-%H%M%S)
+docker exec guacamole_mysql sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" guacamole_db' \
+  > guacamole_db-$(date +%F-%H%M%S).sql
+
+# 2. Static mgmt IP + return route in netplan
+#    Edit /etc/netplan/50-cloud-init.yaml:
+#      mgmt: match MAC <MGMT_MAC>, address <MGMT_IP>/24
+#      routes: default via <MGMT_GW> metric 100
+#              <CLIENT_SUBNET> via <MGMT_GW>
+#              <DNS_SUBNET> via <MGMT_GW>      # optional
+#      nameservers: <DNS1>, <DNS2>
+chmod 600 /etc/netplan/50-cloud-init.yaml
+netplan generate
+netplan apply
+ip route get <CLIENT_IP>        # MUST use <MGMT_GW>/<MGMT_IF>
+
+# 3. Guacamole compose (guacd/mysql/guacamole on one network,
+#    8080 bound to 127.0.0.1, caddy on host network)
+cd <GUAC_DIR>
+docker compose config --quiet
+docker compose up -d
+docker compose ps
+
+# 4. Certificate + Caddyfile + reload
+mkdir -p certs
+openssl req -x509 -nodes -newkey rsa:4096 -sha256 -days 825 \
+  -keyout certs/guac.key -out certs/guac.crt \
+  -subj "/CN=<MGMT_IP>" \
+  -addext "subjectAltName=IP:<MGMT_IP>,DNS:<GUAC_HOSTNAME>"
+chmod 600 certs/guac.key
+docker compose up -d caddy
+docker exec guacamole_caddy caddy reload --config /etc/caddy/Caddyfile
+
+# 5. UFW
+ufw allow from <CLIENT_SUBNET> to any port 443 proto tcp
+ufw allow from <MGMT_SUBNET>   to any port 443 proto tcp
+ufw allow from <CLIENT_SUBNET> to any port 80  proto tcp
+ufw allow from <MGMT_SUBNET>   to any port 80  proto tcp
+ufw status numbered
+
+# 6. Verify
+curl -skI https://<MGMT_IP>/guacamole/
+curl -skI https://<MGMT_IP>/
+nmap -Pn -p 22,80,443,8080 <MGMT_IP>
+ip route get <CLIENT_IP>
+docker logs guacamole_caddy --tail 30
+docker exec guacamole getent hosts guacd
+
+# 7. On the PC
+#    Import certs/guac.crt into Trusted Root Certification Authorities
+#    Open https://<MGMT_IP>/guacamole/
+
+
+=====================================================================
+13. WHAT CAUSED THE ORIGINAL FAILURE - SHORT VERSION
+=====================================================================
+
+Symptom:
+  Request reached VM 108 (tcpdump showed it), but the PC still could not
+  load Guacamole.
+
+Cause:
+  Two default routes. The lab default (10.100.0.1) had metric 0 and won.
+  Replies to 10.2.228.134 were sent via the lab NIC with source
+  10.100.0.50, so the return traffic was invalid/dropped.
+
+Fix:
+  Add a specific route for the client subnet via the mgmt gateway:
+    10.2.228.0/24 via 10.2.229.1 dev ens19
+  Persist it in netplan under the mgmt interface.
+
+Proof:
+  Before: ip route get 10.2.228.134
+           -> via 10.100.0.1 dev ens18 src 10.100.0.50
+  After:  ip route get 10.2.228.134
+           -> via 10.2.229.1 dev ens19 src 10.2.229.50
+
+  tcpdump then showed bidirectional TLS, and Caddy logged:
+           remote_ip 10.2.228.134
+           POST /guacamole/api/session -> 204
+  The Edge browser on the PC loaded the Guacamole UI successfully.
+
+=====================================================================
+END OF RUNBOOK
+=====================================================================
