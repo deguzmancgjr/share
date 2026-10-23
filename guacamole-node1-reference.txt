@@ -40,27 +40,27 @@ Fill this in for node1 BEFORE running anything.
   Item                     node2 example              node1 value
   ---------------------------------------------------------------------
   Proxmox node             node2                      node1
-  Guacamole VM ID          108                        <VMID>
-  Guacamole VM name        Node2Guacamole             <VM_NAME>
-  Management bridge        vmbr0                      <MGMT_BRIDGE>
-  Management interface     ens19                      <MGMT_IF>
-  Management MAC           bc:24:11:63:39:26          <MGMT_MAC>
-  Management IP/prefix     10.2.229.50/24             <MGMT_IP>/24
-  Management gateway       10.2.229.1                 <MGMT_GW>
-  Lab bridge               vmbr1                      <LAB_BRIDGE>
-  Lab interface            ens18                      <LAB_IF>
-  Lab MAC                  bc:24:11:a5:3e:82          <LAB_MAC>
-  Lab IP/prefix            10.100.0.50/24             <LAB_IP>/24
-  Lab gateway              10.100.0.1                 <LAB_GW>
-  Client / allowed subnet  10.2.228.0/24              <CLIENT_SUBNET>
-  Your PC                  10.2.228.134               <CLIENT_IP>
-  DNS servers              10.2.196.11, 10.2.196.12   <DNS1>, <DNS2>
-  DNS search domain        ad.phl-imcite.net          <SEARCH_DOMAIN>
-  Guacamole directory      /home/analyst/guacamole    <GUAC_DIR>
-  Public/entry hostname    guac.ad.phl-imcite.net     <GUAC_HOSTNAME>
-  Certificate CN          10.2.229.50                <MGMT_IP>
-  Self-signed cert file    certs/guac.crt             <CERT_FILE>
-  Self-signed key file     certs/guac.key             <KEY_FILE>
+  Guacamole VM ID          108                        102
+  Guacamole VM name        Node2Guacamole             apache-guacamole-template
+  Management bridge        vmbr0                      vmbr0
+  Management interface     ens19                      ens19
+  Management MAC           bc:24:11:63:39:26          BC:24:11:81:CD:9E
+  Management IP/prefix     10.2.229.50/24             10.2.229.60/24
+  Management gateway       10.2.229.1                 10.2.229.1
+  Lab bridge               vmbr1                      vmbr1
+  Lab interface            ens18                      ens18
+  Lab MAC                  bc:24:11:a5:3e:82          BC:24:11:01:C1:C0
+  Lab IP/prefix            10.100.0.50/24             10.100.0.60/24
+  Lab gateway              10.100.0.1                 10.100.0.1
+  Client / allowed subnet  10.2.228.0/24              10.2.228.0/24
+  Your PC                  10.2.228.134               10.2.228.134
+  DNS servers              10.2.196.11, 10.2.196.12   10.2.196.11, 10.2.196.12
+  DNS search domain        ad.phl-imcite.net          ad.phl-imcite.net
+  Guacamole directory      /home/analyst/guacamole    /home/analyst/guacamole
+  Public/entry hostname    guac.ad.phl-imcite.net     guac1.ad.phl-imcite.net
+  Certificate CN          10.2.229.50                10.2.229.60 
+  Self-signed cert file    certs/guac.crt             certs/guac.crt
+  Self-signed key file     certs/guac.key             certs/guac.key
 
 IMPORTANT:
   - Do NOT reuse 10.2.229.50 on node1. Pick a free management IP in the
