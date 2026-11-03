@@ -7,6 +7,11 @@ BT7 systems in Guacamole as the **BT7-WESCOM** connection group.
 The BT7 Guacamole connections already exist in the database. They are not usable
 until the route and pfSense WAN rule are corrected.
 
+> **Status 2026-11-03:** Access is fixed and verified. The netplan route and
+> pfSense WAN rules described below were already in place. The remaining faults
+> were a `vmbr1` VLAN mismatch and a missing route on the BT7 DC. See
+> Section 3.1 for the applied fixes.
+
 ---
 
 ## 1. Environment Matrix
@@ -134,6 +139,104 @@ Additional findings:
 - VM 185 currently has `WESCOM\BT7-User3` in its local Remote Desktop Users
   group, but the `BT7-WS4` Guacamole connection uses `BT7-User4`. Correct this
   in Section 4.3.
+
+---
+
+## 3.1 Actual fixes applied on 2026-11-03
+
+The three items in Section 3 were already resolved: the `10.7.0.0/24` route is
+present in VM 108, the netplan parses cleanly, and the pfSense WAN RDP/ICMP
+rules exist. Two different faults were blocking access.
+
+### 3.1.1 `vmbr1` VLAN mismatch (root cause)
+
+`vmbr1` is VLAN-aware (`bridge-vlan-aware yes`, `bridge-vids 2-4094`). A prior
+change moved VM 108 and **both** pfSense NICs to VLAN 2, while every BT7 LAN VM
+remained on VLAN 1:
+
+```text
+tap108i0    2 PVID   (should be 1)
+fwpr124p0   2 PVID   (pfSense WAN, should be 1)
+fwpr124p1   2 PVID   (pfSense LAN, should be 1)
+fwpr147p0   1 PVID   (BT7 WS1)
+fwpr148p0   1 PVID   (BT7 WS2)
+fwpr159p0   1 PVID   (BT7 FileSvr)
+fwpr184p0   1 PVID   (BT7 WS3)
+fwpr185p0   1 PVID   (BT7 WS4)
+fwpr195p1   1 PVID   (BT7 DC LAN)
+```
+
+Because pfSense LAN was on VLAN 2, it could not reach the VLAN 1 BT7 hosts.
+Because VM 108 was on VLAN 2, it also lost the shared `10.100.0.0/24` WAN
+(`10.100.0.1` upstream and `10.100.0.60` BT6 pfSense).
+
+Revert those three ports to VLAN 1. This also matches the default PVID that is
+applied when the VM NICs are recreated, so the change survives VM restarts:
+
+```bash
+for p in tap108i0 fwpr124p0 fwpr124p1; do
+  bridge vlan add dev "$p" vid 1 pvid untagged
+  bridge vlan del dev "$p" vid 2
+done
+```
+
+Verify:
+
+```bash
+for p in tap108i0 fwpr124p0 fwpr124p1; do
+  bridge vlan show dev "$p" | sed -n '2p'
+done
+```
+
+### 3.1.2 BT7 DC has no gateway on the lab NIC (root cause)
+
+VM 195 (`10.7.0.2`) had no default gateway on `Ethernet 2`. Its only default
+route used the management NIC (`10.2.229.1`), so replies to Guacamole
+(`10.100.0.50`) left through the wrong interface. pfSense could reach the DC
+because `10.7.0.1` is on-link, but Guacamole could not.
+
+Add a persistent, specific route for the Guacamole WAN subnet:
+
+```powershell
+New-NetRoute -DestinationPrefix "10.100.0.0/24" -NextHop "10.7.0.1" `
+  -InterfaceAlias "Ethernet 2" -RouteMetric 256 -PolicyStore PersistentStore
+```
+
+Verify:
+
+```powershell
+Get-NetRoute -PolicyStore PersistentStore -DestinationPrefix "10.100.0.0/24"
+```
+
+### 3.1.3 Guacamole organization
+
+The six connections already existed at the root as IDs `22`-`27` with correct
+hosts, users, domains, and stored passwords. The `BT7-WESCOM` **connection
+group** did not exist (only a same-named user group did). The following was
+applied:
+
+- Created organizational connection group `BT7-WESCOM` (ID `1`).
+- Moved `BT7-DC`, `BT7-FileSvr`, and `BT7-WS1`-`BT7-WS4` into it.
+- Added `cert-tofu`, `enable-wallpaper`, `enable-theming`, and
+  `enable-font-smoothing` parameters without changing stored passwords.
+- Granted `READ` on the group and all six connections to `redteam`,
+  `guacuser`, `BT7-User`, and the `BT7-WESCOM` user group; `guacadmin` keeps
+  `ADMINISTER`.
+
+### 3.1.4 Verified result
+
+```text
+guacd -> 10.2.229.80:3389 OPEN   (BT7-DC via management)
+guacd -> 10.7.0.2:3389 OPEN
+guacd -> 10.7.0.3:3389 OPEN
+guacd -> 10.7.0.4:3389 OPEN
+guacd -> 10.7.0.5:3389 OPEN
+guacd -> 10.7.0.6:3389 OPEN
+guacd -> 10.7.0.7:3389 OPEN
+```
+
+`10.100.0.1` and `10.100.0.60` are reachable from VM 108 again, and
+`10.6.0.4:3389` (BT6) still works.
 
 ---
 
