@@ -27,7 +27,7 @@ Every Blue Team on `node2` operates inside a logical `/24` subnet (`10.<team>.0.
 
 | Team | Domain | pfSense Router (LAN / WAN) | Domain Controller (`.2`) | File Server (`.3`) | Workstations (`.4`, `.5`, `.6`) | Current Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **BT5 (PCG)** | `pcg.local` | **VM 212** (`10.5.0.1` / `10.100.0.50`) | **VM 214** (`10.5.0.2`) | **VM 157** (`node2`, stopped) / **VM 200** (`node1`, running) → `10.5.0.3` | **145** (`10.5.0.4`), **144** (`10.5.0.5`), **107** (`10.5.0.6`) | IP & DNS Fixed; pfSense VM 212 needs WAN route/NAT check |
+| **BT5 (PCG)** | `pcg.local` | **VM 212** (`10.5.0.1` / `10.100.0.50`) | **VM 214** (`10.5.0.2`) | **VM 157** (`node2`, stopped) / **VM 200** (`node1`, running) → `10.5.0.3` | **145** (`10.5.0.4`), **144** (`10.5.0.5`), **107** (`10.5.0.6`) | **100% Online** (Ping & DNS working; WAN collision fixed) |
 | **BT6 (DND)** | `dnd.local` | **VM 118** (`10.6.0.1` / `10.100.0.60`) | **VM 138** (`10.6.0.2`) | **VM 158** (`10.6.0.3`, QGA down) | **147** (`10.6.0.4`), **148** (`10.6.0.5`), **184** (`10.6.0.6`) | **100% Online** (`147, 148, 184` Ping & DNS working) |
 | **BT7 (WESCOM)** | `wescom.local` | **VM 124** (`10.7.0.1` / `10.100.0.70`) | **VM 195** (`10.7.0.2`) | **VM 159** (`10.7.0.3`) | **149** (`10.7.0.4`, QGA down), **150** (`10.7.0.5`, QGA down), **166** (`10.7.0.6`) | **100% Online** (`159, 166` Ping & DNS working) |
 | **BT8 (NOLCOM)** | `nolcom.local` | **VM 165** (`10.8.0.1` / `10.100.0.80`) | **VM 193** (`10.8.0.2`) | **VM 190** (`10.8.0.3`, QGA down) | **186** (`10.8.0.4`), **187** (`10.8.0.5`), **183** (`10.8.0.6`) | **100% Online** (`186, 187, 183` Ping & DNS working) |
@@ -265,9 +265,9 @@ done
 
 | Team | VM ID | VM Name | IPv4 Address (`State`) | Default Gateway | `Ping 8.8.8.8` | `DNS_Resolve` (`www.msftconnecttest.com`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **BT5** | **145** | `BT5-PCG-WS1` | `10.5.0.4(Preferred)` | `10.5.0.1` | `False` *(awaiting Procedure 3)* | `116.89.245.74` |
-| **BT5** | **144** | `BT5-PCG-WS2` | `10.5.0.5(Preferred)` | `10.5.0.1` | `False` *(awaiting Procedure 3)* | `116.89.245.73` |
-| **BT5** | **107** | `BT5-PCG-WS3` | `10.5.0.6(Preferred)` | `10.5.0.1` | `False` *(awaiting Procedure 3)* | `116.89.245.74` |
+| **BT5** | **145** | `BT5-PCG-WS1` | `10.5.0.4(Preferred)` | `10.5.0.1` | **`True`** | **`116.89.245.74`** |
+| **BT5** | **144** | `BT5-PCG-WS2` | `10.5.0.5(Preferred)` | `10.5.0.1` | **`True`** | **`116.89.245.73`** |
+| **BT5** | **107** | `BT5-PCG-WS3` | `10.5.0.6(Preferred)` | `10.5.0.1` | **`True`** | **`116.89.245.74`** |
 | **BT6** | **147** | `BT6-DND-WS1` | `10.6.0.4(Preferred)` | `10.6.0.1` | **`True`** | **`116.89.245.74`** |
 | **BT6** | **148** | `BT6-DND-WS2` | `10.6.0.5(Preferred)` | `10.6.0.1` | **`True`** | **`116.89.245.73`** |
 | **BT6** | **184** | `BT6-DND-WS3` | `10.6.0.6(Preferred)` | `10.6.0.1` | **`True`** | **`116.89.245.74`** |
