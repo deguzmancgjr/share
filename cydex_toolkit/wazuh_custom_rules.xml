@@ -1,0 +1,68 @@
+<!--
+  AJEX 2026 Detection Engineering Rules (BT6-DND-Wazuh VM 198: 10.6.0.10)
+  Append these rules to /var/ossec/etc/rules/local_rules.xml on the Wazuh Manager
+-->
+<group name="cydex_ajex,ghostfire,">
+
+  <!-- Phase 1: Masqueraded Binary Creation -->
+  <rule id="100010" level="10">
+    <if_group>sysmon_event_11</if_group>
+    <field name="win.eventdata.targetFilename">C:\\Program Files \(x64\)\\Microsoft\\OneDrive\.exe</field>
+    <description>CYDEX-AJEX: Masqueraded OneDrive binary dropped into protected directory.</description>
+    <mitre>
+      <id>T1036.005</id>
+    </mitre>
+  </rule>
+
+  <!-- Phase 1: Non-standard C2 Port 4433 Outbound Connection -->
+  <rule id="100015" level="12">
+    <if_group>sysmon_event_3</if_group>
+    <field name="win.eventdata.destinationPort">^4433$</field>
+    <description>CYDEX-AJEX: Suspicious outbound network connection to APT GHOSTFIRE C2 port 4433.</description>
+    <mitre>
+      <id>T1071.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Phase 2: Sensitive User List Access -->
+  <rule id="100020" level="8">
+    <if_group>windows</if_group>
+    <match>List of Users.txt</match>
+    <description>CYDEX-AJEX: Access to exercise credential reference artifact (List of Users.txt).</description>
+    <mitre>
+      <id>T1081</id>
+    </mitre>
+  </rule>
+
+  <!-- Phase 4: Data Exfiltration over Port 8000 -->
+  <rule id="100030" level="12">
+    <if_group>sysmon_event_3</if_group>
+    <field name="win.eventdata.destinationPort">^8000$</field>
+    <field name="win.eventdata.destinationIp">^10\.100\.0\.80$</field>
+    <description>CYDEX-AJEX: Classified exercise data exfiltration to transit receiver 10.100.0.80:8000.</description>
+    <mitre>
+      <id>T1048.003</id>
+    </mitre>
+  </rule>
+
+  <!-- Phase 5: Ransomware File Extension Modification (.ghostfire) -->
+  <rule id="100040" level="14">
+    <if_group>sysmon_event_11</if_group>
+    <field name="win.eventdata.targetFilename">\.ghostfire$</field>
+    <description>CYDEX-AJEX: Ransomware simulation detected! File extension modified to .ghostfire.</description>
+    <mitre>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+  <!-- Phase 5: Ransom Note Drop -->
+  <rule id="100041" level="12">
+    <if_group>sysmon_event_11</if_group>
+    <field name="win.eventdata.targetFilename">GHOSTFIRE_README\.txt$</field>
+    <description>CYDEX-AJEX: Ransomware note artifact GHOSTFIRE_README.txt dropped on disk.</description>
+    <mitre>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+</group>
