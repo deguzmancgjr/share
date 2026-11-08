@@ -1,0 +1,47 @@
+.\Sysmon64.exe -accepteula -i .\sysmon-config.xml
+
+Enable-PSRemoting -Force 
+
+Invoke-WebRequest -Uri https://packages.wazuh.com/4.x/windows/wazuh-agent-4.14.9-1.msi -OutFile $env:tmp\wazuh-agent; msiexec.exe /i $env:tmp\wazuh-agent /q WAZUH_MANAGER='10.1.0.10' WAZUH_AGENT_NAME='BT1-CYCOM-DC'
+
+  <localfile>
+    <location>Microsoft-Windows-Sysmon/Operational</location>
+    <log_format>eventchannel</log_format>
+  </localfile>
+
+
+# Admin user for the web user interface and Wazuh indexer. Use this user to log in to Wazuh dashboard
+  indexer_username: 'admin'
+  indexer_password: '6scf7Lw?**6Va+fbJ8QiHi6vSCSpuFc7'
+
+# Anomaly detection user for the web user interface
+  indexer_username: 'anomalyadmin'
+  indexer_password: 'foVh+eaZjL5*malCqM8Swf0cshKCMMF8'
+
+# Wazuh dashboard user for establishing the connection with Wazuh indexer
+  indexer_username: 'kibanaserver'
+  indexer_password: 'EbRogv2ADCc+qWwnt6wqVwX+sXAP3v?W'
+
+# Regular Dashboard user, only has read permissions to all indices and all permissions on the .kibana index
+  indexer_username: 'kibanaro'
+  indexer_password: 'dwVYW1n?d*e7cLeu97Kn*lmIiEd+jyYa'
+
+# Filebeat user for CRUD operations on Wazuh indices
+  indexer_username: 'logstash'
+  indexer_password: 'yE?U.yAi?CCeWSFCmV.oSyxgAc.y8z21'
+
+# User with READ access to all indices
+  indexer_username: 'readall'
+  indexer_password: 's*n+YpBR6bDjlfmbgq*XtY0LzgB617aH'
+
+# User with permissions to perform snapshot and restore operations
+  indexer_username: 'snapshotrestore'
+  indexer_password: '?P*5C8Wmjq0hQ.uXRB3cyKiGCrTsUQAY'
+
+# Password for wazuh API user
+  api_username: 'wazuh'
+  api_password: 'mwF22K0TloJroLhLYS*?DISICkLmbfV5'
+
+# Password for wazuh-wui API user
+  api_username: 'wazuh-wui'
+  api_password: 'DZS1*lc*+czPM+qnZ9lRhvWW7wr9ML2o'
